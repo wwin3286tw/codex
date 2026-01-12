@@ -73,6 +73,10 @@ jobs:
             target: aarch64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-24.04
+            target: armv7-unknown-linux-gnueabihf
+          - runner: ubuntu-24.04
+            target: aarch64-linux-android
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
           - runner: windows-11-arm
@@ -100,16 +104,51 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools pkg-config
 
+      - if: ${{ matrix.target == 'armv7-unknown-linux-gnueabihf' }}
+        name: Install armv7 build tools
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-linux-gnueabihf \
+            libc6-dev-armhf-cross \
+            libssl-dev:armhf \
+            pkg-config
+
+      - if: ${{ matrix.target == 'armv7-unknown-linux-gnueabihf' }}
+        name: Configure armv7 build env
+        run: |
+          echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> "$GITHUB_ENV"
+
+      - if: ${{ matrix.target == 'aarch64-linux-android' }}
+        name: Install Android NDK and cargo-ndk
+        env:
+          NDK_VERSION: r26b
+        run: |
+          set -euo pipefail
+          curl -L -o /tmp/android-ndk.zip \
+            https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
+          sudo mkdir -p /opt/android
+          sudo unzip -q /tmp/android-ndk.zip -d /opt/android
+          rm /tmp/android-ndk.zip
+          echo "ANDROID_NDK_HOME=/opt/android/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=/opt/android/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+          cargo install cargo-ndk --version 3.5.4 --locked
+
       - name: Cargo build
         shell: bash
         run: |
           if [[ "${{ contains(matrix.target, 'windows') }}" == 'true' ]]; then
             cargo build --target ${{ matrix.target }} --release --bin codex --bin codex-responses-api-proxy --bin codex-windows-sandbox-setup --bin codex-command-runner
+          elif [[ "${{ matrix.target }}" == 'aarch64-linux-android' ]]; then
+            cargo ndk -t arm64-v8a build -p codex-cli --bin codex --release
           else
             cargo build --target ${{ matrix.target }} --release --bin codex --bin codex-responses-api-proxy
           fi
 
-      - if: ${{ contains(matrix.target, 'linux') }}
+      - if: ${{ contains(matrix.target, 'linux') && !contains(matrix.target, 'android') }}
         name: Cosign Linux artifacts
         uses: ./.github/actions/linux-code-sign
         with:
@@ -213,10 +252,12 @@ jobs:
             cp target/${{ matrix.target }}/release/codex-command-runner.exe "$dest/codex-command-runner-${{ matrix.target }}.exe"
           else
             cp target/${{ matrix.target }}/release/codex "$dest/codex-${{ matrix.target }}"
-            cp target/${{ matrix.target }}/release/codex-responses-api-proxy "$dest/codex-responses-api-proxy-${{ matrix.target }}"
+            if [[ "${{ matrix.target }}" != 'aarch64-linux-android' ]]; then
+              cp target/${{ matrix.target }}/release/codex-responses-api-proxy "$dest/codex-responses-api-proxy-${{ matrix.target }}"
+            fi
           fi
 
-          if [[ "${{ matrix.target }}" == *linux* ]]; then
+          if [[ "${{ matrix.target }}" == *linux* && "${{ matrix.target }}" != *android* ]]; then
             cp target/${{ matrix.target }}/release/codex.sigstore "$dest/codex-${{ matrix.target }}.sigstore"
             cp target/${{ matrix.target }}/release/codex-responses-api-proxy.sigstore "$dest/codex-responses-api-proxy-${{ matrix.target }}.sigstore"
           fi

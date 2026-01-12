@@ -141,6 +141,12 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             profile: release
+          - runner: ubuntu-24.04
+            target: armv7-unknown-linux-gnueabihf
+            profile: release
+          - runner: ubuntu-24.04
+            target: aarch64-linux-android
+            profile: release
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             profile: release
@@ -244,15 +250,54 @@ jobs:
           sudo apt-get -y update -o Acquire::Retries=3
           sudo apt-get -y install --no-install-recommends musl-tools pkg-config
 
+      - if: ${{ matrix.target == 'armv7-unknown-linux-gnueabihf' }}
+        name: Install armv7 build tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture armhf
+          sudo apt-get -y update -o Acquire::Retries=3
+          sudo apt-get -y install --no-install-recommends \
+            gcc-arm-linux-gnueabihf \
+            libc6-dev-armhf-cross \
+            libssl-dev:armhf \
+            pkg-config
+
+      - if: ${{ matrix.target == 'armv7-unknown-linux-gnueabihf' }}
+        name: Configure armv7 build env
+        shell: bash
+        run: |
+          echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> "$GITHUB_ENV"
+
+      - if: ${{ matrix.target == 'aarch64-linux-android' }}
+        name: Install Android NDK and cargo-ndk
+        env:
+          NDK_VERSION: r26b
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L -o /tmp/android-ndk.zip \
+            https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
+          sudo mkdir -p /opt/android
+          sudo unzip -q /tmp/android-ndk.zip -d /opt/android
+          rm /tmp/android-ndk.zip
+          echo "ANDROID_NDK_HOME=/opt/android/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=/opt/android/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+          cargo install cargo-ndk --version 3.5.4 --locked
+
       - name: Install cargo-chef
-        if: ${{ matrix.profile == 'release' }}
+        if: ${{ matrix.profile == 'release' && matrix.target != 'aarch64-linux-android' }}
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2
         with:
           tool: cargo-chef
           version: 0.1.71
 
       - name: Pre-warm dependency cache (cargo-chef)
-        if: ${{ matrix.profile == 'release' }}
+        if: ${{ matrix.profile == 'release' && matrix.target != 'aarch64-linux-android' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -260,7 +305,12 @@ jobs:
           cargo chef prepare --recipe-path "$RECIPE"
           cargo chef cook --recipe-path "$RECIPE" --target ${{ matrix.target }} --release --all-features
 
+      - name: cargo build (android)
+        if: ${{ matrix.target == 'aarch64-linux-android' }}
+        run: cargo ndk -t arm64-v8a build -p codex-cli --bin codex --release
+
       - name: cargo clippy
+        if: ${{ matrix.target != 'aarch64-linux-android' }}
         id: clippy
         run: cargo clippy --target ${{ matrix.target }} --all-features --tests --profile ${{ matrix.profile }} -- -D warnings
 
